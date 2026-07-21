@@ -1,0 +1,24 @@
+# Perfil de desenvolvimento: aplicado automaticamente pelo `docker compose`.
+# Expoe as portas dos servicos direto no host, sem passar pelo Caddy — util para
+# psql local, DBeaver e para testar webhooks com ngrok apontando no n8n.
+# Em producao suba com: docker compose -f docker-compose.yml up -d
+
+services:
+  postgres:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  n8n:
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      # Permite login pelo acesso direto em http://localhost:5678 (sem TLS).
+      N8N_SECURE_COOKIE: "false"
+
+  chatwoot:
+    ports:
+      - "${CHATWOOT_PORT:-3000}:3000"

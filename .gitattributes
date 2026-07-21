@@ -1,0 +1,5 @@
+# Scripts montados em containers Linux precisam de LF, mesmo clonados no Windows.
+*.sh text eol=lf
+*.sql text eol=lf
+Makefile text eol=lf
+Caddyfile text eol=lf

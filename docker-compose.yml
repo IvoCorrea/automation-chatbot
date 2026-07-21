@@ -1,0 +1,221 @@
+# Stack de infraestrutura local: n8n + postgres(pgvector) + chatwoot + redis + caddy.
+# Portas diretas dos servicos ficam no docker-compose.override.yml (perfil de dev).
+# Em producao apenas o caddy publica 80/443.
+
+name: imob-agent
+
+x-chatwoot-env: &chatwoot-env
+  # Configuracao compartilhada entre o processo web (rails) e o worker (sidekiq).
+  INSTALLATION_ENV: docker
+  RAILS_ENV: production
+  NODE_ENV: production
+  RAILS_LOG_TO_STDOUT: "true"
+  SECRET_KEY_BASE: ${CHATWOOT_SECRET_KEY_BASE:?defina CHATWOOT_SECRET_KEY_BASE no .env}
+  FRONTEND_URL: https://chat.${BASE_DOMAIN:-localhost}
+  FORCE_SSL: "false"
+  ENABLE_ACCOUNT_SIGNUP: ${CHATWOOT_ENABLE_ACCOUNT_SIGNUP:-false}
+  DEFAULT_LOCALE: ${CHATWOOT_DEFAULT_LOCALE:-pt_BR}
+  ACTIVE_STORAGE_SERVICE: local
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DATABASE: ${CHATWOOT_DB_NAME:-chatwoot}
+  POSTGRES_USERNAME: ${CHATWOOT_DB_USER:-chatwoot}
+  POSTGRES_PASSWORD: ${CHATWOOT_DB_PASSWORD:?defina CHATWOOT_DB_PASSWORD no .env}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env}@redis:6379/0
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres 16 com pgvector. Um unico cluster hospeda:
+  #   - database "app"      -> schema "core" (aplicacao) + schema "n8n" (n8n)
+  #   - database "chatwoot" -> schema public (Rails exige)
+  # A criacao acontece em db/init/, executado apenas no primeiro boot do volume.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      # Superusuario do cluster, usado somente pelo init e pelos scripts de manutencao.
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?defina POSTGRES_SUPERUSER_PASSWORD no .env}
+      POSTGRES_DB: postgres
+      # Consumidos pelo script de init e pelos scripts de migrate/seed.
+      APP_DB_NAME: ${APP_DB_NAME:-app}
+      APP_DB_USER: ${APP_DB_USER:-app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+      APP_DB_SCHEMA: ${APP_DB_SCHEMA:-core}
+      N8N_DB_USER: ${N8N_DB_USER:-n8n}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?defina N8N_DB_PASSWORD no .env}
+      N8N_DB_SCHEMA: ${N8N_DB_SCHEMA:-n8n}
+      CHATWOOT_DB_NAME: ${CHATWOOT_DB_NAME:-chatwoot}
+      CHATWOOT_DB_USER: ${CHATWOOT_DB_USER:-chatwoot}
+      CHATWOOT_DB_PASSWORD: ${CHATWOOT_DB_PASSWORD}
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      # Migrations, seed e scripts sao montados para rodar via `docker compose exec`.
+      - ./db:/db:ro
+      - ./scripts:/scripts:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Chatwoot exige redis com senha; a senha entra tambem na REDIS_URL.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env}", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # ---------------------------------------------------------------------------
+  # n8n: orquestrador dos workflows do agente. Persiste no schema "n8n" do
+  # database compartilhado; credenciais criptografadas com N8N_ENCRYPTION_KEY.
+  # ---------------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:${N8N_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_DATABASE: ${APP_DB_NAME:-app}
+      DB_POSTGRESDB_SCHEMA: ${N8N_DB_SCHEMA:-n8n}
+      DB_POSTGRESDB_USER: ${N8N_DB_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?defina N8N_ENCRYPTION_KEY no .env}
+      N8N_HOST: n8n.${BASE_DOMAIN:-localhost}
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://n8n.${BASE_DOMAIN:-localhost}/
+      N8N_EDITOR_BASE_URL: https://n8n.${BASE_DOMAIN:-localhost}/
+      # Roda atras do Caddy: confia em 1 hop de proxy para IP/cookies corretos.
+      N8N_PROXY_HOPS: "1"
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      # Permite ler process.env dentro dos nodes (chaves de API dos providers).
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      GENERIC_TIMEZONE: ${TZ:-America/Sao_Paulo}
+      TZ: ${TZ:-America/Sao_Paulo}
+      # Credenciais repassadas para uso dentro dos workflows.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER:-360dialog}
+      D360_API_KEY: ${D360_API_KEY:-}
+      D360_API_BASE_URL: ${D360_API_BASE_URL:-https://waba-v2.360dialog.io}
+      META_WABA_ID: ${META_WABA_ID:-}
+      META_PHONE_NUMBER_ID: ${META_PHONE_NUMBER_ID:-}
+      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      # Banco da aplicacao, para os nodes Postgres do agente.
+      APP_DB_HOST: postgres
+      APP_DB_NAME: ${APP_DB_NAME:-app}
+      APP_DB_SCHEMA: ${APP_DB_SCHEMA:-core}
+      APP_DB_USER: ${APP_DB_USER:-app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      CHATWOOT_BASE_URL: https://chat.${BASE_DOMAIN:-localhost}
+      CHATWOOT_API_ACCESS_TOKEN: ${CHATWOOT_API_ACCESS_TOKEN:-}
+      CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID:-}
+      CHATWOOT_INBOX_ID: ${CHATWOOT_INBOX_ID:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # Chatwoot: inbox humana para handoff do corretor. O entrypoint da imagem roda
+  # `rails db:chatwoot_prepare` sozinho, entao nao ha migration manual aqui.
+  # ---------------------------------------------------------------------------
+  chatwoot:
+    image: chatwoot/chatwoot:${CHATWOOT_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment: *chatwoot-env
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    volumes:
+      - chatwoot_storage:/app/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api >/dev/null 2>&1 || curl -fsS http://127.0.0.1:3000/api >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+
+  chatwoot-worker:
+    image: chatwoot/chatwoot:${CHATWOOT_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chatwoot:
+        condition: service_healthy
+    environment: *chatwoot-env
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    volumes:
+      - chatwoot_storage:/app/storage
+
+  # ---------------------------------------------------------------------------
+  # Caddy: reverse proxy com TLS automatico.
+  #   BASE_DOMAIN=localhost  -> certificado da CA interna do Caddy (aceite no browser)
+  #   BASE_DOMAIN=dominio.com -> ACME/Let's Encrypt, exige DNS apontado e 80/443 abertas
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      n8n:
+        condition: service_healthy
+      chatwoot:
+        condition: service_healthy
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_data:
+  chatwoot_storage:
+  caddy_data:
+  caddy_config:

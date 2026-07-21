@@ -1,0 +1,20 @@
+# Reverse proxy dos dois servicos com interface web.
+# Com BASE_DOMAIN=localhost o Caddy emite certificado pela CA interna dele
+# (*.localhost resolve para 127.0.0.1 na maioria dos sistemas).
+# Com um dominio real e DNS apontado, o ACME/Let's Encrypt entra sozinho.
+
+{
+	email {$ACME_EMAIL:admin@example.com}
+}
+
+n8n.{$BASE_DOMAIN:localhost} {
+	encode zstd gzip
+	# O n8n usa websocket para o editor; o Caddy faz o upgrade automaticamente.
+	reverse_proxy n8n:5678
+}
+
+chat.{$BASE_DOMAIN:localhost} {
+	encode zstd gzip
+	# ActionCable do Chatwoot roda em /cable no mesmo processo web.
+	reverse_proxy chatwoot:3000
+}
