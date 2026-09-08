@@ -18,3 +18,8 @@ chat.{$BASE_DOMAIN:localhost} {
 	# ActionCable do Chatwoot roda em /cable no mesmo processo web.
 	reverse_proxy chatwoot:3000
 }
+
+api.{$BASE_DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy api:8080
+}

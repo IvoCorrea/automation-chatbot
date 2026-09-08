@@ -1,0 +1,12 @@
+.git
+.env
+.agents
+.codex
+target
+README.md
+AGENTS.md
+CLAUDE.md
+db
+scripts
+caddy
+docker-compose*.yml

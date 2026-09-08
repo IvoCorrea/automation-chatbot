@@ -134,6 +134,8 @@ services:
       CHATWOOT_API_ACCESS_TOKEN: ${CHATWOOT_API_ACCESS_TOKEN:-}
       CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID:-}
       CHATWOOT_INBOX_ID: ${CHATWOOT_INBOX_ID:-}
+      IMOB_AGENT_API_URL: http://api:8080
+      IMOB_AGENT_API_TOKEN: ${API_INTERNAL_TOKEN:-}
     volumes:
       - n8n_data:/home/node/.n8n
     healthcheck:
@@ -142,6 +144,27 @@ services:
       timeout: 5s
       retries: 20
       start_period: 40s
+
+  # API de regras e dados do produto. O n8n a chama internamente; Caddy publica
+  # o webhook para que o provedor de WhatsApp consiga entregar mensagens.
+  api:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_JDBC_URL: jdbc:postgresql://postgres:5432/${APP_DB_NAME:-app}?currentSchema=${APP_DB_SCHEMA:-core}
+      APP_DB_USER: ${APP_DB_USER:-app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      API_INTERNAL_TOKEN: ${API_INTERNAL_TOKEN:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ---------------------------------------------------------------------------
   # Chatwoot: inbox humana para handoff do corretor. O entrypoint da imagem roda
@@ -176,6 +199,8 @@ services:
       redis:
         condition: service_healthy
       chatwoot:
+        condition: service_healthy
+      api:
         condition: service_healthy
     environment: *chatwoot-env
     command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]

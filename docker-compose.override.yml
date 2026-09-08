@@ -22,3 +22,7 @@ services:
   chatwoot:
     ports:
       - "${CHATWOOT_PORT:-3000}:3000"
+
+  api:
+    ports:
+      - "${API_PORT:-8080}:8080"

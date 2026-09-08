@@ -25,6 +25,7 @@ up: .env
 	@echo ""
 	@echo "  n8n      -> https://n8n.$${BASE_DOMAIN:-localhost}   (direto: http://localhost:5678)"
 	@echo "  chatwoot -> https://chat.$${BASE_DOMAIN:-localhost}  (direto: http://localhost:3000)"
+	@echo "  api      -> https://api.$${BASE_DOMAIN:-localhost}  (direto: http://localhost:8080)"
 	@echo "  postgres -> localhost:5432"
 	@echo ""
 	@echo "  proximo passo: make seed"

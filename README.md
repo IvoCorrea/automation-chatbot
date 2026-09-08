@@ -1,9 +1,9 @@
 # Agente de WhatsApp para imobiliárias — infraestrutura
 
-Stack local para a demo: n8n orquestra o agente, Postgres+pgvector guarda leads
+Stack local para a demo: Spring Boot concentra a API e as regras de dados, n8n orquestra o agente, Postgres+pgvector guarda leads
 e catálogo, Chatwoot é a inbox humana do corretor, Caddy publica tudo com TLS.
 
-**A lógica do agente ainda não existe** — este repositório é só a base de infra.
+**O fluxo de IA e as integrações externas ainda precisam ser configurados no n8n**. A API inicial já expõe operações para leads, conversas, mensagens, qualificações e busca de imóveis.
 
 ## Requisitos
 
@@ -49,6 +49,7 @@ Via Caddy (TLS):
 | --- | --- |
 | `https://n8n.localhost` | editor do n8n |
 | `https://chat.localhost` | Chatwoot |
+| `https://api.localhost` | API Spring Boot |
 
 Com `BASE_DOMAIN=localhost` o certificado vem da CA interna do Caddy, então o
 browser mostra aviso de certificado — é esperado. Trocando `BASE_DOMAIN` por um
@@ -103,6 +104,21 @@ aluguel, não venda.
 3. **WhatsApp**: preencha as credenciais da 360dialog ou da Meta Cloud API no
    `.env`. Elas são injetadas no container do n8n como variáveis de ambiente e
    ficam acessíveis nos nodes via `$env` — sem segredo salvo em workflow.
+
+## API do MVP
+
+A API fica em `https://api.localhost` (ou `http://localhost:8080` no perfil de desenvolvimento). O contrato de entrada do n8n para mensagens recebidas é:
+
+```http
+POST /api/webhooks/whatsapp
+Content-Type: application/json
+
+{"telefone":"5511999999999","nome":"Maria","conteudo":"Procuro apartamento em Moema","providerMessageId":"wamid..."}
+```
+
+Principais rotas: `POST /api/leads`, `POST /api/leads/{id}/conversas`, `POST /api/conversas/{id}/mensagens`, `POST /api/leads/{id}/qualificacoes`, `GET /api/imoveis` e `POST /api/conversas/{id}/handoff`. A API não recebe o payload cru de Meta/360dialog: o workflow n8n deve validá-lo e normalizá-lo antes de chamar essa rota.
+
+Em ambiente publicado, defina `API_INTERNAL_TOKEN` e envie o mesmo valor no cabeçalho `X-Internal-Token` dos nós HTTP do n8n. Deixar esse valor vazio é permitido apenas para testes locais.
 
 ## Estrutura
 
